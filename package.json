@@ -1,0 +1,17 @@
+{
+  "name": "yonkebot",
+  "version": "1.0.0",
+  "description": "Bot de WhatsApp para venta de piezas de yonkes en Sinaloa.",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "twilio": "^5.1.0"
+  }
+}
