@@ -1,43 +1,75 @@
-// --- SIMULACIÓN DE BASE DE DATOS ---
-// En un proyecto real, esto se conectaría a tu base de datos RDS.
-const inventario = [
-    { id: 1, vendedor: 'Yonke El Güero', pieza: 'alternador', vehiculo: 'Tsuru 2010', condicion: '9/10', precio: 800, contacto: '6671234567' },
-    { id: 2, vendedor: 'Yonke Culiacán', pieza: 'defensa delantera', vehiculo: 'Ford Ranger 2015', condicion: '8/10', precio: 1500, contacto: '6677654321' }
-];
+// Importa el conector de PostgreSQL
+const { Pool } = require('pg');
+
+// Crea un "pool" de conexiones. Node.js reutilizará conexiones para ser más eficiente.
+// El pool leerá automáticamente las variables de entorno (DB_HOST, DB_USER, etc.)
+const pool = new Pool();
 
 /**
- * Guarda una nueva pieza en el inventario.
- * En el futuro, esta función ejecutará un INSERT en tu tabla de SQL.
- * @param {object} pieza - El objeto de la pieza a guardar.
- * @returns {Promise<object>} La pieza guardada.
+ * Busca o crea un usuario basado en su número de teléfono.
+ * @param {string} phoneNumber - El número de teléfono con el prefijo de whatsapp.
+ * @returns {Promise<object>} El ID del usuario.
  */
-const guardarPieza = async (pieza) => {
-    console.log('Guardando pieza en la base de datos (simulado):', pieza);
-    pieza.id = inventario.length + 1; // Simula un ID autoincremental
-    inventario.push(pieza);
-    return pieza;
+const findOrCreateUser = async (phoneNumber) => {
+    // Primero, intenta encontrar al usuario
+    let userResult = await pool.query('SELECT id FROM users WHERE phone_number = $1', [phoneNumber]);
+
+    if (userResult.rows.length > 0) {
+        // Si el usuario existe, devuelve su ID
+        return userResult.rows[0];
+    } else {
+        // Si no existe, créalo
+        userResult = await pool.query('INSERT INTO users (phone_number) VALUES ($1) RETURNING id', [phoneNumber]);
+        return userResult.rows[0];
+    }
 };
 
 /**
- * Busca piezas en el inventario que coincidan con las palabras clave.
- * En el futuro, esta función ejecutará un SELECT ... WHERE ... LIKE en tu tabla.
- * @param {string} terminosDeBusqueda - Lo que el usuario escribió para buscar.
- * @returns {Promise<Array<object>>} Un arreglo de piezas que coinciden.
+ * Guarda un nuevo anuncio en la base de datos.
+ * @param {object} ventaData - Objeto con los datos de la venta.
+ * @returns {Promise<object>} El anuncio guardado.
  */
-const buscarPieza = async (terminosDeBusqueda) => {
-    console.log(`Buscando "${terminosDeBusqueda}" en la base de datos (simulado)`);
-    const terminos = terminosDeBusqueda.toLowerCase().split(' ');
+const crearAnuncio = async (ventaData) => {
+    const { seller_id, title, description, price, attributes } = ventaData;
     
-    const resultados = inventario.filter(item => {
-        const textoItem = `${item.pieza} ${item.vehiculo}`.toLowerCase();
-        // Comprueba si todos los términos de búsqueda están en el texto del item
-        return terminos.every(termino => textoItem.includes(termino));
-    });
+    const query = `
+        INSERT INTO listings (seller_id, listing_type, title, description, price, attributes)
+        VALUES ($1, 'auto_part', $2, $3, $4, $5)
+        RETURNING *;
+    `;
 
-    return resultados;
+    // Para el ejemplo, el title será la pieza y la descripción será el vehículo y condición
+    const values = [seller_id, title, description, price, attributes];
+    
+    const result = await pool.query(query, values);
+    console.log('Anuncio guardado en la base de datos:', result.rows[0]);
+    return result.rows[0];
 };
+
+/**
+ * Busca anuncios usando el índice de texto completo.
+ * @param {string} terminos - Palabras clave para la búsqueda.
+ * @returns {Promise<Array<object>>} Un arreglo de anuncios que coinciden.
+ */
+const buscarAnuncio = async (terminos) => {
+    const query = `
+        SELECT l.id, l.title, l.description, l.price, l.attributes, u.phone_number as contacto
+        FROM listings l
+        JOIN users u ON l.seller_id = u.id
+        WHERE l.search_vector @@ to_tsquery('spanish', $1)
+        AND l.status = 'active';
+    `;
+    
+    // Formatea los términos para la búsqueda: 'palabra1 & palabra2'
+    const formattedTerms = terminos.trim().split(/\s+/).join(' & ');
+    
+    const result = await pool.query(query, [formattedTerms]);
+    return result.rows;
+};
+
 
 module.exports = {
-    guardarPieza,
-    buscarPieza
+    findOrCreateUser,
+    crearAnuncio,
+    buscarAnuncio
 };
