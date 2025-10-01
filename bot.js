@@ -4,7 +4,8 @@ require('dotenv').config();
 // Importa las librerías necesarias
 const express = require('express');
 const twilio = require('twilio');
-const { guardarPieza, buscarPieza } = require('./database.js');
+//const { guardarPieza, buscarPieza } = require('./database.js');
+const { findOrCreateUser, crearAnuncio, buscarAnuncio } = require('./database.js');
 
 // --- CONFIGURACIÓN ---
 const app = express();
@@ -62,12 +63,12 @@ app.post('/whatsapp', async (req, res) => {
 
 
 // --- LÓGICA DE CONVERSACIONES ---
-
 const iniciarVenta = async (numero) => {
-    // Iniciamos una nueva conversación para registrar una pieza
+    const user = await findOrCreateUser(numero);
+
     conversaciones[numero] = {
         paso: 'esperando_pieza',
-        datos: {}
+        datos: { seller_id: user.id } // Guardamos el ID del vendedor
     };
     return '¡Perfecto! Vamos a registrar tu pieza.\n\nPrimero, dime el **nombre de la pieza** (ej. Alternador, Faro izquierdo).';
 };
@@ -87,36 +88,42 @@ const manejarConversacion = async (numero, mensaje) => {
             return '✅ ¡Genial! En una escala del 1 al 10, ¿cuál es la **condición** de la pieza?';
 
         case 'esperando_condicion':
-            estado.datos.condicion = `${mensaje}/10`;
-            estado.datos.contacto = numero.replace('whatsapp:', ''); // Guarda el número limpio
-            
-            // Aquí guardamos la pieza en nuestra "base de datos"
-            await guardarPieza(estado.datos);
-
-            // Terminamos la conversación
+            const estado = conversaciones[numero];
+            estado.datos.title = estado.datos.pieza; // El título será el nombre de la pieza
+            estado.datos.description = `${estado.datos.vehiculo}, Condición: ${mensaje}/10`;
+        
+            // Creamos el objeto de atributos para el campo JSONB
+            estado.datos.attributes = {
+                vehicle: estado.datos.vehiculo,
+                condition: `${mensaje}/10`
+            };
+        
+            // Guardamos el anuncio en la base de datos real
+            await crearAnuncio(estado.datos);
+        
             delete conversaciones[numero];
-
-            return '🎉 ¡Tu pieza ha sido registrada con éxito! Te notificaremos cuando haya interesados.';
+        
+            return '🎉 ¡Tu pieza ha sido registrada con éxito!';
     }
     return 'Lo siento, no entendí esa parte. ¿Podrías repetirla?';
 };
 
 const ejecutarBusqueda = async (terminos) => {
-    const resultados = await buscarPieza(terminos);
+   const resultados = await buscarAnuncio(terminos);
 
     if (resultados.length === 0) {
-        return `Lo siento, no encontré ninguna pieza que coincida con "${terminos}". 😔`;
+        return `Lo siento, no encontré nada para "${terminos}". 😔`;
     }
 
     let respuesta = `¡Encontré ${resultados.length} resultado(s) para "${terminos}"! 👇\n\n`;
 
     resultados.forEach(item => {
         respuesta += `---
-*Pieza:* ${item.pieza}
-*Vehículo:* ${item.vehiculo}
-*Condición:* ${item.condicion}
-*Vendido por:* ${item.vendedor}
-*Contacto:* \`wa.me/${item.contacto}\`\n\n`;
+        *Pieza:* ${item.pieza}
+        *Vehículo:* ${item.vehiculo}
+        *Condición:* ${item.condicion}
+        *Vendido por:* ${item.vendedor}
+        *Contacto:* \`wa.me/${item.contacto}\`\n\n`;
     });
     
     return respuesta;
