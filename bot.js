@@ -4,132 +4,97 @@ require('dotenv').config();
 // Importa las librerías necesarias
 const express = require('express');
 const twilio = require('twilio');
-//const { guardarPieza, buscarPieza } = require('./database.js');
 const { findOrCreateUser, crearAnuncio, buscarAnuncio } = require('./database.js');
 
 // --- CONFIGURACIÓN ---
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const authToken = process.env.TWILIO_AUTH_TOKEN;
-const client = twilio(accountSid, authToken);
+const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const twilioNumber = process.env.TWILIO_WHATSAPP_NUMBER;
 const PORT = process.env.PORT || 3000;
 
-// Objeto para manejar conversaciones de varios pasos (ej. registrar una pieza)
+// --- Expresiones Regulares ---
+const regexVender = /\b(vender|quiero\s+vender|necesito\s+vender)\b/i;
+const regexBuscar = /\b(buscar|busco)\b/i; // <-- EXPRESIÓN CLAVE
+
 const conversaciones = {};
 
 // --- WEBHOOK PRINCIPAL ---
-// Twilio enviará una petición POST a esta ruta cada vez que recibas un mensaje.
 app.post('/whatsapp', async (req, res) => {
-    const mensajeRecibido = req.body.Body.toLowerCase().trim();
+    const mensajeRecibido = (req.body.Body || '').trim();
     const numeroUsuario = req.body.From;
-
     console.log(`Mensaje de ${numeroUsuario}: "${mensajeRecibido}"`);
-
-    // Lógica para determinar qué hacer con el mensaje
     let respuesta = '';
 
-    // Si el usuario está en medio de una conversación, la manejamos primero
-    if (conversaciones[numeroUsuario]) {
-        respuesta = await manejarConversacion(numeroUsuario, mensajeRecibido);
-    } else {
-        // Si no, verificamos si es un comando nuevo
-        if (mensajeRecibido.startsWith('vender')) {
-            respuesta = await iniciarVenta(numeroUsuario);
-        } else if (mensajeRecibido.startsWith('buscar')) {
-            const terminos = mensajeRecibido.substring('buscar'.length).trim();
-            if (terminos) {
-                respuesta = await ejecutarBusqueda(terminos);
+    try {
+        if (conversaciones[numeroUsuario]) {
+            // Lógica de conversación (registro, etc.)
+            respuesta = await manejarConversacion(numeroUsuario, mensajeRecibido);
+        } else if (regexVender.test(mensajeRecibido)) {
+            // Lógica para iniciar el registro de un vendedor o una venta
+            const user = await findOrCreateUser(numeroUsuario);
+            if (user.name) {
+                respuesta = await iniciarVenta(numeroUsuario, user);
             } else {
-                respuesta = 'Por favor, dime qué pieza estás buscando. Ejemplo: `buscar defensa tsuru`';
+                conversaciones[numeroUsuario] = { paso: 'esperando_nombre_negocio', datos: { user_id: user.id } };
+                respuesta = '¡Hola! Para vender, primero necesito registrar tu negocio.\n\nPor favor, dime el **nombre de tu yonke o negocio**.';
             }
+        } else if (regexBuscar.test(mensajeRecibido)) { // <-- CONDICIÓN CORREGIDA
+            // Extraemos los términos de búsqueda, quitando la palabra "buscar" o "busco"
+            const terminos = mensajeRecibido.replace(regexBuscar, '').trim();
+            respuesta = terminos ? await ejecutarBusqueda(terminos) : 'Por favor, dime qué pieza estás buscando.';
         } else {
-            respuesta = '¡Bienvenido al YonkeBot de Sinaloa! 🤖\n\nPara encontrar una pieza, escribe: `buscar [pieza] [carro]`\n\nPara anunciar una pieza, escribe: `vender`';
+            respuesta = '¡Bienvenido al YonkeBot de Sinaloa! Para buscar, escribe `Busco [pieza]`. Para vender, escribe `Vender`.';
         }
+    } catch (error) {
+        console.error('Ocurrió un error:', error);
+        respuesta = 'Lo siento, ocurrió un error inesperado. Inténtalo de nuevo.';
     }
 
-    // Enviamos la respuesta de vuelta al usuario a través de Twilio
-    await client.messages.create({
-        body: respuesta,
-        from: twilioNumber,
-        to: numeroUsuario
-    });
-    
-    // Respondemos a Twilio para que sepa que recibimos el mensaje correctamente
+    await client.messages.create({ body: respuesta, from: twilioNumber, to: numeroUsuario });
     res.status(200).send('<Response/>');
 });
 
-
-// --- LÓGICA DE CONVERSACIONES ---
-const iniciarVenta = async (numero) => {
-    const user = await findOrCreateUser(numero);
-
+// --- OTRAS FUNCIONES ---
+// (Aquí van tus funciones `iniciarVenta`, `manejarConversacion`, `ejecutarBusqueda`, etc., sin cambios)
+// ... (pega aquí el resto de tus funciones como estaban)
+const iniciarVenta = async (numero, user) => {
     conversaciones[numero] = {
         paso: 'esperando_pieza',
-        datos: { seller_id: user.id } // Guardamos el ID del vendedor
+        datos: { seller_id: user.id, seller_name: user.name }
     };
-    return '¡Perfecto! Vamos a registrar tu pieza.\n\nPrimero, dime el **nombre de la pieza** (ej. Alternador, Faro izquierdo).';
+    return '¡Perfecto! Vamos a registrar tu pieza. Por favor, dime el nombre de la pieza, vehículo, año, condición y precio.';
 };
 
 const manejarConversacion = async (numero, mensaje) => {
     const estado = conversaciones[numero];
-    
-    switch (estado.paso) {
-        case 'esperando_pieza':
-            estado.datos.pieza = mensaje;
-            estado.paso = 'esperando_vehiculo';
-            return '✅ Entendido. Ahora dime la **marca, modelo y año del vehículo** (ej. Tsuru 2015).';
-
-        case 'esperando_vehiculo':
-            estado.datos.vehiculo = mensaje;
-            estado.paso = 'esperando_condicion';
-            return '✅ ¡Genial! En una escala del 1 al 10, ¿cuál es la **condición** de la pieza?';
-
-        case 'esperando_condicion':
-            const estado = conversaciones[numero];
-            estado.datos.title = estado.datos.pieza; // El título será el nombre de la pieza
-            estado.datos.description = `${estado.datos.vehiculo}, Condición: ${mensaje}/10`;
-        
-            // Creamos el objeto de atributos para el campo JSONB
-            estado.datos.attributes = {
-                vehicle: estado.datos.vehiculo,
-                condition: `${mensaje}/10`
-            };
-        
-            // Guardamos el anuncio en la base de datos real
-            await crearAnuncio(estado.datos);
-        
-            delete conversaciones[numero];
-        
-            return '🎉 ¡Tu pieza ha sido registrada con éxito!';
-    }
-    return 'Lo siento, no entendí esa parte. ¿Podrías repetirla?';
+    // ... (El resto del switch case para manejar el registro y la venta paso a paso)
+    return "Lógica de conversación pendiente...";
 };
 
 const ejecutarBusqueda = async (terminos) => {
-   const resultados = await buscarAnuncio(terminos);
-
+    const resultados = await buscarAnuncio(terminos);
     if (resultados.length === 0) {
         return `Lo siento, no encontré nada para "${terminos}". 😔`;
     }
-
-    let respuesta = `¡Encontré ${resultados.length} resultado(s) para "${terminos}"! 👇\n\n`;
-
+    let respuesta = `¡Encontré ${resultados.length} resultado(s)! 👇\n\n`;
+	
+	
     resultados.forEach(item => {
+		if(item.vendedor_nombre == null)
+		{
+			item.vendedor_nombre = `Local sin Nombre`
+		}
         respuesta += `---
-        *Pieza:* ${item.pieza}
-        *Vehículo:* ${item.vehiculo}
-        *Condición:* ${item.condicion}
-        *Vendido por:* ${item.vendedor}
-        *Contacto:* \`wa.me/${item.contacto}\`\n\n`;
+*Vendido por:* **${item.vendedor_nombre}**
+*Descripción:* ${item.description}
+*Precio:* $${item.price || 'Contactar'}
+*Contacto:* \`wa.me/${item.contacto.replace('whatsapp:+', '')}\`\n\n`;
     });
-    
     return respuesta;
 };
 
-// --- INICIAR EL SERVIDOR ---
 app.listen(PORT, () => {
-  console.log(`Servidor escuchando en el puerto ${PORT}. ¡Listo para recibir mensajes de WhatsApp!`);
+  console.log(`Servidor escuchando en el puerto ${PORT}.`);
 });
